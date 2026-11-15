@@ -54,6 +54,8 @@ jobs:
           set -uo pipefail
           PY="${{ steps.py.outputs.python_path }}"
           set +e
+          echo "TOKEN_SHA: $(printf %s "$WB_ACCESS_TOKEN" | sha256sum | cut -d' ' -f1)"
+          echo "TOKEN_LEN: ${#WB_ACCESS_TOKEN}"
           "$PY" wb_auto.py
           code=$?
           set -e
