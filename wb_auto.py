@@ -376,6 +376,10 @@ def main():
         "Content-Type": "application/json",
         "User-Agent": "WorkBuddy",
     }
+    # 客户端（及本机 oracle）实际调用时都会带 X-User-Id；缺失时网关可能直接 401。
+    user_id = (os.environ.get("WB_USER_ID") or "").strip()
+    if user_id:
+        headers["X-User-Id"] = user_id
 
     log("=== 1/2 签到 ===")
     checkin_ok, checkin = run_checkin(headers, endpoint)
