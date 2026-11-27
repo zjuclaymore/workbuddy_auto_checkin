@@ -81,3 +81,40 @@ jobs:
           else
             echo "- 未产出结论文案，请查看上方日志" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: 发送签到结果邮件
+        if: ${{ !cancelled() }}
+        env:
+          QQ_SMTP_USER: ${{ secrets.QQ_SMTP_USER }}
+          QQ_SMTP_AUTH_CODE: ${{ secrets.QQ_SMTP_AUTH_CODE }}
+          CHECKIN_OUTCOME: ${{ steps.run.outcome }}
+          CHECKIN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import smtplib
+          import ssl
+          from email.message import EmailMessage
+
+          user = os.environ["QQ_SMTP_USER"]
+          auth_code = os.environ["QQ_SMTP_AUTH_CODE"]
+          if not user or not auth_code:
+              print("::notice::尚未配置 QQ 邮件通知")
+              raise SystemExit(0)
+
+          ok = os.environ["CHECKIN_OUTCOME"] == "success" and os.environ["CHECKIN_EXIT_CODE"] == "0"
+          result = "签到成功或今日已签" if ok else "签到未确认，请查看运行日志"
+          run_url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+          message = EmailMessage()
+          message["From"] = user
+          message["To"] = user
+          message["Subject"] = f"WorkBuddy｜{result}"
+          message.set_content(f"{result}\n\nGitHub Actions: {run_url}\n")
+          try:
+              with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=20, context=ssl.create_default_context()) as smtp:
+                  smtp.login(user, auth_code)
+                  smtp.send_message(message)
+          except (OSError, smtplib.SMTPException):
+              raise SystemExit("QQ 邮件发送失败，请检查 SMTP 授权码和服务状态") from None
+          PY
+
