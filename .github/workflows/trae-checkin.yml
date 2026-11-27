@@ -1,0 +1,96 @@
+name: TRAE SOLO 每日签到
+
+on:
+  schedule:
+    - cron: '17 0 * * *' # 北京时间 08:17
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trae-checkin
+  cancel-in-progress: false
+
+jobs:
+  checkin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Maquer/trae-signin
+          ref: 8c898d5d2b49bc1680b4c7f6535b36fc76a3b5a3
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: 编译签到工具
+        run: go build -o signin-bin ./cmd/signin
+
+      - name: 执行签到并验证结果
+        id: checkin
+        env:
+          TRAE_AUTH_1: ${{ secrets.TRAE_AUTH_1 }}
+        run: |
+          if [[ -z "$TRAE_AUTH_1" ]]; then
+            echo "::error::缺少 TRAE_AUTH_1"
+            exit 1
+          fi
+          umask 077
+          auth_dir=$(mktemp -d)
+          trap 'rm -rf -- "$auth_dir"' EXIT
+          printf '%s' "$TRAE_AUTH_1" > "$auth_dir/trae-1.json"
+          unset TRAE_AUTH_1
+
+          if ! ./signin-bin "$auth_dir" > "$auth_dir/result.log" 2>&1; then
+            echo "::error::TRAE 签到程序执行失败"
+            exit 1
+          fi
+
+          summary=$(grep -E '^📊 总计=1  签到成功=[01]  已签=[01]  禁用=[01]  未确认=[01]  设备异常=[01]  失败=[01]$' "$auth_dir/result.log" || true)
+          if [[ -n "$summary" ]]; then
+            printf '%s\n' "$summary" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ ! "$summary" =~ 签到成功=1|已签=1 ]]; then
+            echo "::error::TRAE 签到未确认，请查看汇总或在客户端核对"
+            exit 1
+          fi
+
+      - name: 发送签到结果邮件
+        if: ${{ !cancelled() }}
+        env:
+          QQ_SMTP_USER: ${{ secrets.QQ_SMTP_USER }}
+          QQ_SMTP_AUTH_CODE: ${{ secrets.QQ_SMTP_AUTH_CODE }}
+          CHECKIN_OUTCOME: ${{ steps.checkin.outcome }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import smtplib
+          import ssl
+          from email.message import EmailMessage
+
+          user = os.environ["QQ_SMTP_USER"]
+          auth_code = os.environ["QQ_SMTP_AUTH_CODE"]
+          if not user or not auth_code:
+              print("::notice::尚未配置 QQ 邮件通知")
+              raise SystemExit(0)
+
+          ok = os.environ["CHECKIN_OUTCOME"] == "success"
+          result = "签到成功或今日已签" if ok else "签到未确认，请查看运行日志"
+          run_url = f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+          message = EmailMessage()
+          message["From"] = user
+          message["To"] = user
+          message["Subject"] = f"TRAE SOLO｜{result}"
+          message.set_content(f"{result}\n\nGitHub Actions: {run_url}\n")
+          try:
+              with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=20, context=ssl.create_default_context()) as smtp:
+                  smtp.login(user, auth_code)
+                  smtp.send_message(message)
+          except (OSError, smtplib.SMTPException):
+              raise SystemExit("QQ 邮件发送失败，请检查 SMTP 授权码和服务状态") from None
+          PY
+
